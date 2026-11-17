@@ -9,8 +9,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Tuner">
 <link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icon-180.png">
-<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
 <title>Guitar Tuner</title>
 <style>
   :root{
@@ -48,6 +49,9 @@
   #cents{color:var(--muted);font-variant-numeric:tabular-nums;height:22px;font-size:16px}
 
   .strings{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px}
+  .strings.twelve{gap:6px}
+  .strings.twelve button{padding:9px 0;font-size:18px}
+  #tip{color:var(--muted);font-size:12px;text-align:center;margin:-6px 0 10px;min-height:0}
   .strings button{padding:14px 0;font-size:20px;font-weight:600;border-radius:14px;position:relative}
   .strings button small{display:block;font-size:11px;font-weight:400;color:var(--muted)}
   .strings button.near{border-color:var(--accent);color:var(--accent)}
@@ -88,6 +92,7 @@
 </main>
 
 <div class="strings" id="strings"></div>
+<p id="tip"></p>
 <button id="start">Start tuning</button>
 <p id="msg"></p>
 
@@ -104,6 +109,10 @@ const TUNINGS={
   "Open G":[38,43,50,55,59,62],
   "Open D":[38,45,50,54,57,62],
   "Open E":[40,47,52,56,59,64],
+  // 12-string: listed as pairs per course (thick string, then its octave / unison partner)
+  "12-string Standard":[40,52,45,57,50,62,55,67,59,59,64,64],
+  "12-string Half step down":[39,51,44,56,49,61,54,66,58,58,63,63],
+  "12-string Full step down":[38,50,43,55,48,60,53,65,57,57,62,62],
   "Bass-less / Chromatic (any note)":null
 };
 let A4=+localStorage.getItem("a4")||440;
@@ -143,14 +152,19 @@ $("refDn").onclick=()=>setRef(A4-1);$("refUp").onclick=()=>setRef(A4+1);setRef(A
 function buildStrings(){
   const box=$("strings");box.innerHTML="";
   const t=TUNINGS[tuningName];
-  if(!t){box.style.display="none";return}
+  if(!t){box.style.display="none";$("tip").textContent="";return}
   box.style.display="grid";
-  t.forEach((m,i)=>{
+  const twelve=t.length===12;
+  box.classList.toggle("twelve",twelve);
+  $("tip").textContent=twelve?"12-string: pluck one string at a time (mute its pair), or tap a string to lock onto it. The two top pairs are unisons.":"";
+  const order=twelve?[0,2,4,6,8,10,1,3,5,7,9,11]:t.map((_,i)=>i);   // row 1 = thick strings, row 2 = octave strings
+  order.forEach(i=>{
+    const m=t[i];
     const b=document.createElement("button");
     b.dataset.i=i;
-    b.innerHTML=noteName(m)+"<small>"+(6-i)+"</small>";
+    b.innerHTML=noteName(m)+"<small>"+(twelve?oct(m):(6-i))+"</small>";
     if(selected===i)b.classList.add("sel");
-    if(done.has(i))b.classList.add("done");
+    if([...done].some(j=>t[j]===m))b.classList.add("done");     // unison pairs share a tick
     b.onclick=()=>{selected=(selected===i)?null:i;buildStrings();playRef(m)};
     box.appendChild(b);
   });
@@ -266,7 +280,7 @@ function guided(d,sr,list,spanCents){
   for(const c of cands){
     if(c.tau>=best.tau)continue;
     const ratio=best.tau/c.tau, n=Math.round(ratio);
-    if(n>=2&&n<=6&&Math.abs(ratio-n)/n<0.03&&c.score<=best.score+0.08)best=c;
+    if(n>=2&&n<=6&&Math.abs(ratio-n)/n<0.03&&c.score<=best.score+(n===2?0.04:0.08))best=c;
   }
   return best;
 }
@@ -329,8 +343,11 @@ function loop(){
   const t=TUNINGS[tuningName];
   if(rms>Math.max(0.0004,noise*2)){
     if(t){
-      const span=selected!==null?250:150;
-      const ids=selected!==null?[selected]:t.map((_,i)=>i);
+      // search window: up to 150 cents, but never wide enough to overlap a neighbouring string
+      const uniq=[...new Set(t)].sort((a,b)=>a-b);
+      let gap=1e9;for(let i=1;i<uniq.length;i++)gap=Math.min(gap,(uniq[i]-uniq[i-1])*100);
+      const span=selected!==null?250:Math.min(150,gap/2-5);
+      const ids=selected!==null?[selected]:t.map((_,i)=>i).filter(i=>t.indexOf(t[i])===i);
       const list=ids.map(i=>({idx:i,midi:t[i]}));
       const lowF=midiToFreq(Math.min(...ids.map(i=>t[i])))/Math.pow(2,span/1200);
       const d=ndf(buf,ctx.sampleRate,Math.ceil(ctx.sampleRate/lowF)+3);
@@ -406,7 +423,7 @@ function show(f,knownIdx){
   $("hint").className=cls;
   $("hint").textContent=inTune?"In tune ✓":(cents<0?"Too low – tighten ↑":"Too high – loosen ↓");
 
-  document.querySelectorAll(".strings button").forEach(b=>b.classList.toggle("near",+b.dataset.i===nearIdx&&selected===null));
+  document.querySelectorAll(".strings button").forEach(b=>b.classList.toggle("near",!!t&&t[+b.dataset.i]===t[nearIdx]&&selected===null));
   if(t&&latch&&!done.has(nearIdx)){done.add(nearIdx);buildStrings()}
 }
 
