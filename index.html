@@ -40,6 +40,8 @@
   .meter{position:relative;width:100%;max-width:420px;height:90px;margin-top:10px}
   .meter svg{width:100%;height:100%;overflow:visible}
   #needle{transition:transform .08s linear;transform-origin:210px 80px}
+  #lvlbox{width:60%;max-width:240px;height:6px;background:#1f232c;border-radius:3px;overflow:hidden}
+  #lvl{height:100%;width:0;background:var(--accent);transition:width .05s}
   #cents{color:var(--muted);font-variant-numeric:tabular-nums;height:22px;font-size:16px}
 
   .strings{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px}
@@ -77,6 +79,7 @@
     </svg>
   </div>
   <div id="cents">&nbsp;</div>
+  <div id="lvlbox"><div id="lvl"></div></div>
   <div id="hint">Tap Start, then pluck a string</div>
 </main>
 
@@ -167,6 +170,11 @@ function playRef(m){
 // ---------- pitch detection (YIN) ----------
 function yin(buf,sr){
   const N=buf.length, W=N>>1;
+  let pk=0;for(let i=0;i<N;i++){const a=Math.abs(buf[i]);if(a>pk)pk=a}
+  if(pk<1e-5)return null;
+  const g=0.5/pk;                       // software gain so quiet notes still register
+  const x0=new Float32Array(N);for(let i=0;i<N;i++)x0[i]=buf[i]*g;
+  buf=x0;
   const tauMin=Math.floor(sr/700), tauMax=Math.min(W-1,Math.floor(sr/50));
   const d=new Float32Array(tauMax+1);
   for(let tau=1;tau<=tauMax;tau++){
@@ -177,14 +185,14 @@ function yin(buf,sr){
   // cumulative mean normalised difference
   let run=0;d[0]=1;
   for(let tau=1;tau<=tauMax;tau++){run+=d[tau];d[tau]=d[tau]*tau/run}
-  const TH=0.12;
+  const TH=0.2;
   let tau=-1;
   for(let t=tauMin;t<=tauMax;t++){
     if(d[t]<TH){while(t+1<=tauMax&&d[t+1]<d[t])t++;tau=t;break}
   }
   if(tau<0){ // fall back to global min if reasonably clear
     let m=tauMin;for(let t=tauMin;t<=tauMax;t++)if(d[t]<d[m])m=t;
-    if(d[m]<0.25)tau=m;else return null;
+    if(d[m]<0.4)tau=m;else return null;
   }
   // parabolic interpolation
   const a=d[tau-1],b=d[tau],c=d[tau+1]||b;
@@ -196,7 +204,7 @@ window.__yin=yin; // exposed for testing
 
 // ---------- audio / main loop ----------
 let ctx,analyser,stream,buf,raf,wakeLock,running=false;
-let hist=[],lastGood=0,stableNote=null,stableCount=0;
+let noise=0.0005,hist=[],lastGood=0,stableNote=null,stableCount=0;
 
 async function start(){
   $("msg").textContent="";
@@ -246,13 +254,15 @@ function loop(){
   analyser.getFloatTimeDomainData(buf);
   let rms=0;for(let i=0;i<buf.length;i++)rms+=buf[i]*buf[i];rms=Math.sqrt(rms/buf.length);
   let f=null;
-  if(rms>0.006)f=yin(buf,ctx.sampleRate);
+  if(rms<noise*1.5||rms<0.0008)noise=noise*0.95+rms*0.05;   // learn room noise while quiet
+  $("lvl").style.width=Math.min(100,rms*1200)+"%";
+  if(rms>Math.max(0.0012,noise*2.5))f=yin(buf,ctx.sampleRate);
   if(f&&f>50&&f<1000){
-    hist.push(f);if(hist.length>5)hist.shift();
+    hist.push(f);if(hist.length>3)hist.shift();
     const sorted=[...hist].sort((a,b)=>a-b);
     show(sorted[sorted.length>>1]);
     lastGood=performance.now();
-  }else if(performance.now()-lastGood>900){
+  }else if(performance.now()-lastGood>1500){
     hist=[];
     if($("note").textContent!=="–")reset(),$("hint").textContent="Pluck a string…";
   }

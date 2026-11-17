@@ -1,5 +1,5 @@
 // Cache everything so the tuner works offline after the first visit.
-const CACHE = "tuner-v1";
+const CACHE = "tuner-v2";
 const FILES = ["./", "./index.html", "./manifest.json", "./icon.svg", "./icon-180.png", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", e => {
