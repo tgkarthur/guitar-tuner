@@ -86,6 +86,7 @@
 <div class="strings" id="strings"></div>
 <button id="start">Start tuning</button>
 <p id="msg"></p>
+<p id="dbg" style="color:#4a5163;font-size:11px;text-align:center;margin:2px 0 0;min-height:14px"></p>
 
 <script>
 "use strict";
@@ -204,20 +205,21 @@ window.__yin=yin; // exposed for testing
 
 // ---------- guided detection: only look near each string's expected pitch ----------
 // Normalised difference function (with software gain). Returns null if silent.
-function ndf(buf,sr){
-  const N=buf.length, W=N>>1;
-  let pk=0;for(let i=0;i<N;i++){const a=Math.abs(buf[i]);if(a>pk)pk=a}
+function ndf(buf,sr,tauMax){
+  const N=buf.length, W=Math.min(3072,N>>1), base=N-W;   // window = newest W samples; lags look back
+  tauMax=Math.min(tauMax,base-1);
+  let pk=0;for(let i=base;i<N;i++){const a=Math.abs(buf[i]);if(a>pk)pk=a}
   if(pk<1e-5)return null;
   const g=0.5/pk, x=new Float32Array(N);
   for(let i=0;i<N;i++)x[i]=buf[i]*g;
-  const tauMax=Math.min(W-1,Math.floor(sr/60));
   const d=new Float32Array(tauMax+2);
   for(let tau=1;tau<=tauMax;tau++){
-    let s=0;for(let i=0;i<W;i++){const v=x[i]-x[i+tau];s+=v*v}
+    let s=0;for(let i=base;i<N;i++){const v=x[i]-x[i-tau];s+=v*v}
     d[tau]=s;
   }
   let run=0;d[0]=1;
   for(let tau=1;tau<=tauMax;tau++){run+=d[tau];d[tau]=d[tau]*tau/run}
+  d.x=x;d.base=base;d.maxLag=base-1;
   return d;
 }
 function pickMin(d,lo,hi){
@@ -225,6 +227,18 @@ function pickMin(d,lo,hi){
   let m=-1,v=9;
   for(let t=lo;t<=hi;t++)if(d[t]<v){v=d[t];m=t}
   if(m<0)return null;
+  // refine with normalised cross-correlation (immune to the note fading), measured over
+  // several periods: a lag of k periods gives k times finer frequency resolution
+  if(d.x&&m>1){
+    const x=d.x,base=d.base,N=x.length,maxLag=d.maxLag,cache={};
+    const nc=t=>cache[t]!==undefined?cache[t]:(()=>{let ab=0,aa=0,bb=0;for(let i=base;i<N;i++){const p=x[i],q=x[i-t];ab+=p*q;aa+=p*p;bb+=q*q}return cache[t]=ab/Math.sqrt(aa*bb+1e-12)})();
+    const peak=(c0,r)=>{let bl=c0,bv=-9;for(let l=c0-r;l<=c0+r;l++){if(l<2||l>maxLag)continue;const v=nc(l);if(v>bv){bv=v;bl=l}}
+      if(bl<=2||bl>=maxLag)return bl;const a=nc(bl-1),b=nc(bl),c=nc(bl+1),den=a+c-2*b;
+      return bl+(den<0?Math.max(-1,Math.min(1,0.5*(a-c)/den)):0)};
+    let T=peak(m,1);
+    for(let k=2;k<=12&&k*T*1.01<=maxLag&&k*T<=4000;k++)T=peak(Math.round(k*T),2)/k;
+    return {tau:T,score:v};
+  }
   const a=d[m-1],b=d[m],c=d[m+1],den=a+c-2*b;
   return {tau:m+(den?0.5*(a-c)/den:0),score:v};
 }
@@ -240,7 +254,7 @@ function guided(d,sr,list,spanCents){
     // prefer the lowest score; on near-ties prefer the shorter period (higher string)
     if(!best||r.score<best.score-0.04||(Math.abs(r.score-best.score)<=0.04&&r.tau<best.tau))best=r;
   }
-  return best&&best.score<0.3?best:null;
+  return best;
 }
 window.__guided=guided;window.__ndf=ndf;
 
@@ -260,7 +274,7 @@ async function start(){
   ctx=new (window.AudioContext||window.webkitAudioContext)();
   if(ctx.state==="suspended")await ctx.resume();
   const src=ctx.createMediaStreamSource(stream);
-  analyser=ctx.createAnalyser();analyser.fftSize=4096;analyser.smoothingTimeConstant=0;
+  analyser=ctx.createAnalyser();analyser.fftSize=8192;analyser.smoothingTimeConstant=0;
   src.connect(analyser);
   buf=new Float32Array(analyser.fftSize);
   running=true;$("start").textContent="Stop";$("start").classList.add("on");
@@ -295,20 +309,27 @@ function loop(){
   if(!running)return;
   analyser.getFloatTimeDomainData(buf);
   let rms=0;for(let i=0;i<buf.length;i++)rms+=buf[i]*buf[i];rms=Math.sqrt(rms/buf.length);
-  if(rms<noise*1.5||rms<0.0008)noise=noise*0.95+rms*0.05;   // learn room noise while quiet
+  noise=rms<noise?rms:noise*1.002;   // minimum tracker: falls fast, rises very slowly
   $("lvl").style.width=Math.min(100,rms*1200)+"%";
-  let f=null,idx=-1;
+  let f=null,idx=-1,dbg="level "+rms.toFixed(4)+" · no pitch";
   const t=TUNINGS[tuningName];
-  if(rms>Math.max(0.0012,noise*2.5)){
+  if(rms>Math.max(0.0004,noise*2)){
     if(t){
-      const d=ndf(buf,ctx.sampleRate);
+      const span=selected!==null?250:150;
+      const ids=selected!==null?[selected]:t.map((_,i)=>i);
+      const list=ids.map(i=>({idx:i,midi:t[i]}));
+      const lowF=midiToFreq(Math.min(...ids.map(i=>t[i])))/Math.pow(2,span/1200);
+      const d=ndf(buf,ctx.sampleRate,Math.ceil(ctx.sampleRate/lowF)+3);
       if(d){
-        const list=(selected!==null?[selected]:t.map((_,i)=>i)).map(i=>({idx:i,midi:t[i]}));
-        const r=guided(d,ctx.sampleRate,list,selected!==null?250:150);
-        if(r){f=r.f;idx=r.idx}
+        const r=guided(d,ctx.sampleRate,list,span);
+        if(r){
+          dbg="level "+rms.toFixed(4)+" · clarity "+(1-r.score).toFixed(2)+" · "+r.f.toFixed(1)+"Hz";
+          if(r.score<0.3){f=r.f;idx=r.idx}
+        }
       }
     }else f=yin(buf,ctx.sampleRate);
   }
+  $("dbg").textContent=dbg;
   if(f&&f>50&&f<1000){
     if(hist.length&&histIdx!==idx)hist=[];       // different string -> restart smoothing
     histIdx=idx;
