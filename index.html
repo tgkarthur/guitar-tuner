@@ -32,6 +32,8 @@
   .ref b{color:var(--text);min-width:60px;text-align:center;font-weight:600}
 
   main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:0}
+  body.stale main{opacity:.45}
+  main{transition:opacity .3s}
   #note{font-size:min(34vw,200px);font-weight:700;line-height:1;transition:color .15s}
   #note small{font-size:.3em;vertical-align:super;margin-left:2px}
   #freq{color:var(--muted);font-size:18px;height:24px;font-variant-numeric:tabular-nums}
@@ -245,14 +247,25 @@ function pickMin(d,lo,hi){
 // midis: array of {idx,midi}; spanCents: search window either side of each string
 function guided(d,sr,list,spanCents){
   const k=Math.pow(2,spanCents/1200);
-  let best=null;
+  const cands=[];
   for(const s of list){
     const tau0=sr/midiToFreq(s.midi);
     const r=pickMin(d,tau0/k,tau0*k);
     if(!r)continue;
     r.idx=s.idx;r.f=sr/r.tau;
-    // prefer the lowest score; on near-ties prefer the shorter period (higher string)
-    if(!best||r.score<best.score-0.04||(Math.abs(r.score-best.score)<=0.04&&r.tau<best.tau))best=r;
+    if(Math.abs(1200*Math.log2(r.f/midiToFreq(s.midi)))>spanCents+25)continue; // refinement wandered off
+    cands.push(r);
+  }
+  if(!cands.length)return null;
+  cands.sort((a,b)=>a.score-b.score);
+  let best=cands[0];
+  // A note at period T is also "periodic" at 2T, 3T, 4T, so a low string's window can match a
+  // higher string's note. If a shorter-period candidate is an integer fraction of the winner and
+  // nearly as clear, it is the true fundamental.
+  for(const c of cands){
+    if(c.tau>=best.tau)continue;
+    const ratio=best.tau/c.tau, n=Math.round(ratio);
+    if(n>=2&&n<=6&&Math.abs(ratio-n)/n<0.03&&c.score<=best.score+0.08)best=c;
   }
   return best;
 }
@@ -260,7 +273,7 @@ window.__guided=guided;window.__ndf=ndf;
 
 // ---------- audio / main loop ----------
 let ctx,analyser,stream,buf,raf,wakeLock,running=false;
-let noise=0.0005,histIdx=-1,hist=[],lastGood=0,stableNote=null,stableCount=0;
+let noise=0.0005,pend=-1,pendN=0,histIdx=-1,hist=[],lastGood=0,stableNote=null,stableCount=0;
 
 async function start(){
   $("msg").textContent="";
@@ -324,24 +337,36 @@ function loop(){
         const r=guided(d,ctx.sampleRate,list,span);
         if(r){
           dbg="level "+rms.toFixed(4)+" · clarity "+(1-r.score).toFixed(2)+" · "+r.f.toFixed(1)+"Hz";
-          if(r.score<0.3){f=r.f;idx=r.idx}
+          if(r.score<0.3||(r.idx===histIdx&&hist.length&&r.score<0.45)){f=r.f;idx=r.idx}
         }
       }
     }else f=yin(buf,ctx.sampleRate);
   }
   $("dbg").textContent=dbg;
-  if(f&&f>50&&f<1000){
-    if(hist.length&&histIdx!==idx)hist=[];       // different string -> restart smoothing
+  let usable=f&&f>50&&f<1000;
+  if(usable&&hist.length&&histIdx!==idx){
+    // a different string: only switch after it wins several frames in a row (ignores one-frame blips)
+    if(idx===pend)pendN++;else{pend=idx;pendN=1}
+    if(pendN>=4){hist=[];histIdx=idx;pend=-1;pendN=0}
+    else usable=false;
+  }else if(usable){pend=-1;pendN=0}
+  const now=performance.now();
+  if(usable){
     histIdx=idx;
     hist.push(f);if(hist.length>5)hist.shift();
     if(hist.length>=2){
       const sorted=[...hist].sort((a,b)=>a-b);
       show(sorted[sorted.length>>1],idx);
-      lastGood=performance.now();
+      lastGood=now;
     }
-  }else if(performance.now()-lastGood>1500){
-    hist=[];
-    if($("note").textContent!=="–")reset(),$("hint").textContent="Pluck a string…";
+    document.body.classList.remove("stale");
+  }else{
+    // no clear note right now: keep the last reading visible (dimmed) so it can be read
+    if(now-lastGood>600)document.body.classList.add("stale");
+    if(now-lastGood>3000){
+      hist=[];histIdx=-1;pend=-1;pendN=0;document.body.classList.remove("stale");
+      if($("note").textContent!=="–")reset(),$("hint").className="",$("hint").textContent="Pluck a string…";
+    }
   }
   raf=requestAnimationFrame(loop);
 }
