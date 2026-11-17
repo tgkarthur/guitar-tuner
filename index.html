@@ -202,9 +202,51 @@ function yin(buf,sr){
 }
 window.__yin=yin; // exposed for testing
 
+// ---------- guided detection: only look near each string's expected pitch ----------
+// Normalised difference function (with software gain). Returns null if silent.
+function ndf(buf,sr){
+  const N=buf.length, W=N>>1;
+  let pk=0;for(let i=0;i<N;i++){const a=Math.abs(buf[i]);if(a>pk)pk=a}
+  if(pk<1e-5)return null;
+  const g=0.5/pk, x=new Float32Array(N);
+  for(let i=0;i<N;i++)x[i]=buf[i]*g;
+  const tauMax=Math.min(W-1,Math.floor(sr/60));
+  const d=new Float32Array(tauMax+2);
+  for(let tau=1;tau<=tauMax;tau++){
+    let s=0;for(let i=0;i<W;i++){const v=x[i]-x[i+tau];s+=v*v}
+    d[tau]=s;
+  }
+  let run=0;d[0]=1;
+  for(let tau=1;tau<=tauMax;tau++){run+=d[tau];d[tau]=d[tau]*tau/run}
+  return d;
+}
+function pickMin(d,lo,hi){
+  lo=Math.max(2,Math.floor(lo));hi=Math.min(d.length-3,Math.ceil(hi));
+  let m=-1,v=9;
+  for(let t=lo;t<=hi;t++)if(d[t]<v){v=d[t];m=t}
+  if(m<0)return null;
+  const a=d[m-1],b=d[m],c=d[m+1],den=a+c-2*b;
+  return {tau:m+(den?0.5*(a-c)/den:0),score:v};
+}
+// midis: array of {idx,midi}; spanCents: search window either side of each string
+function guided(d,sr,list,spanCents){
+  const k=Math.pow(2,spanCents/1200);
+  let best=null;
+  for(const s of list){
+    const tau0=sr/midiToFreq(s.midi);
+    const r=pickMin(d,tau0/k,tau0*k);
+    if(!r)continue;
+    r.idx=s.idx;r.f=sr/r.tau;
+    // prefer the lowest score; on near-ties prefer the shorter period (higher string)
+    if(!best||r.score<best.score-0.04||(Math.abs(r.score-best.score)<=0.04&&r.tau<best.tau))best=r;
+  }
+  return best&&best.score<0.3?best:null;
+}
+window.__guided=guided;window.__ndf=ndf;
+
 // ---------- audio / main loop ----------
 let ctx,analyser,stream,buf,raf,wakeLock,running=false;
-let noise=0.0005,hist=[],lastGood=0,stableNote=null,stableCount=0;
+let noise=0.0005,histIdx=-1,hist=[],lastGood=0,stableNote=null,stableCount=0;
 
 async function start(){
   $("msg").textContent="";
@@ -253,15 +295,29 @@ function loop(){
   if(!running)return;
   analyser.getFloatTimeDomainData(buf);
   let rms=0;for(let i=0;i<buf.length;i++)rms+=buf[i]*buf[i];rms=Math.sqrt(rms/buf.length);
-  let f=null;
   if(rms<noise*1.5||rms<0.0008)noise=noise*0.95+rms*0.05;   // learn room noise while quiet
   $("lvl").style.width=Math.min(100,rms*1200)+"%";
-  if(rms>Math.max(0.0012,noise*2.5))f=yin(buf,ctx.sampleRate);
+  let f=null,idx=-1;
+  const t=TUNINGS[tuningName];
+  if(rms>Math.max(0.0012,noise*2.5)){
+    if(t){
+      const d=ndf(buf,ctx.sampleRate);
+      if(d){
+        const list=(selected!==null?[selected]:t.map((_,i)=>i)).map(i=>({idx:i,midi:t[i]}));
+        const r=guided(d,ctx.sampleRate,list,selected!==null?250:150);
+        if(r){f=r.f;idx=r.idx}
+      }
+    }else f=yin(buf,ctx.sampleRate);
+  }
   if(f&&f>50&&f<1000){
-    hist.push(f);if(hist.length>3)hist.shift();
-    const sorted=[...hist].sort((a,b)=>a-b);
-    show(sorted[sorted.length>>1]);
-    lastGood=performance.now();
+    if(hist.length&&histIdx!==idx)hist=[];       // different string -> restart smoothing
+    histIdx=idx;
+    hist.push(f);if(hist.length>5)hist.shift();
+    if(hist.length>=2){
+      const sorted=[...hist].sort((a,b)=>a-b);
+      show(sorted[sorted.length>>1],idx);
+      lastGood=performance.now();
+    }
   }else if(performance.now()-lastGood>1500){
     hist=[];
     if($("note").textContent!=="–")reset(),$("hint").textContent="Pluck a string…";
@@ -269,11 +325,12 @@ function loop(){
   raf=requestAnimationFrame(loop);
 }
 
-function show(f){
+function show(f,knownIdx){
   const t=TUNINGS[tuningName];
   let targetMidi,nearIdx=-1;
   if(t){
-    if(selected!==null){nearIdx=selected}
+    if(knownIdx>=0){nearIdx=knownIdx}
+    else if(selected!==null){nearIdx=selected}
     else{ // closest string in cents
       let best=1e9;
       t.forEach((m,i)=>{const c=Math.abs(1200*Math.log2(f/midiToFreq(m)));if(c<best){best=c;nearIdx=i}});
