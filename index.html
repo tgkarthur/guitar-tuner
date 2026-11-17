@@ -23,7 +23,7 @@
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     -webkit-user-select:none;user-select:none;overscroll-behavior:none}
   body{display:flex;flex-direction:column;
-    padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom))}
+    padding:calc(max(env(safe-area-inset-top,0px),20px) + 14px) 16px calc(max(env(safe-area-inset-bottom,0px),12px) + 6px)}
   header{display:flex;gap:8px;align-items:center;justify-content:space-between}
   select,button{font:inherit;color:var(--text);background:var(--panel);border:1px solid #2a2f3a;
     border-radius:12px;padding:10px 12px}
@@ -32,17 +32,17 @@
   .ref button{width:36px;height:40px;padding:0;font-size:20px}
   .ref b{color:var(--text);min-width:60px;text-align:center;font-weight:600}
 
-  main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:0}
+  main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:0}
   body.stale main{opacity:.45}
   main{transition:opacity .3s}
-  #note{font-size:min(34vw,200px);font-weight:700;line-height:1;transition:color .15s}
+  #note{font-size:min(28vw,150px);font-weight:700;line-height:1;transition:color .15s}
   #note small{font-size:.3em;vertical-align:super;margin-left:2px}
   #freq{color:var(--muted);font-size:18px;height:24px;font-variant-numeric:tabular-nums}
   #hint{font-size:22px;font-weight:600;height:30px}
 
-  .meter{position:relative;width:100%;max-width:420px;height:90px;margin-top:10px}
-  .meter svg{width:100%;height:100%;overflow:visible}
-  #needle{transition:transform .08s linear;transform-origin:210px 80px}
+  .meter{position:relative;width:100%;max-width:340px;aspect-ratio:420/172;flex:none}
+  .meter svg{width:100%;height:100%;display:block}
+  #needle{transition:transform .08s linear;transform-origin:210px 160px}
   #lvlbox{width:60%;max-width:240px;height:6px;background:#1f232c;border-radius:3px;overflow:hidden}
   #lvl{height:100%;width:0;background:var(--accent);transition:width .05s}
   #dbg{color:#7d8597;font-size:12px;min-height:16px;font-variant-numeric:tabular-nums}
@@ -72,20 +72,17 @@
 </header>
 
 <main>
-  <div id="note">–</div>
-  <div id="freq">&nbsp;</div>
   <div class="meter">
-    <svg viewBox="0 0 420 90">
-      <path d="M20 80 A190 190 0 0 1 400 80" fill="none" stroke="#2a2f3a" stroke-width="2"/>
-      <g stroke="#3a4150" stroke-width="2">
-        <line x1="210" y1="0" x2="210" y2="18" stroke="#6b7385" stroke-width="3"/>
-      </g>
+    <svg viewBox="0 0 420 172">
+      <path d="M80.1 85 A150 150 0 0 1 339.9 85" fill="none" stroke="#2a2f3a" stroke-width="3" stroke-linecap="round"/>
       <g id="ticks" stroke="#3a4150" stroke-width="2"></g>
-      <g id="needle"><line x1="210" y1="80" x2="210" y2="8" stroke="#fff" stroke-width="4" stroke-linecap="round" id="needleLine"/></g>
-      <circle cx="210" cy="80" r="6" fill="#fff"/>
+      <g id="needle"><line x1="210" y1="160" x2="210" y2="34" stroke="#fff" stroke-width="4" stroke-linecap="round" id="needleLine"/></g>
+      <circle cx="210" cy="160" r="7" fill="#fff"/>
     </svg>
   </div>
   <div id="cents">&nbsp;</div>
+  <div id="note">–</div>
+  <div id="freq">&nbsp;</div>
   <div id="lvlbox"><div id="lvl"></div></div>
   <div id="dbg"></div>
   <div id="hint">Tap Start, then pluck a string</div>
@@ -135,16 +132,15 @@ sel.onchange=()=>{tuningName=sel.value;localStorage.setItem("tuning",tuningName)
 function setRef(v){A4=Math.min(460,Math.max(420,v));localStorage.setItem("a4",A4);$("refTxt").textContent="A="+A4;buildStrings()}
 $("refDn").onclick=()=>setRef(A4-1);$("refUp").onclick=()=>setRef(A4+1);setRef(A4);
 
-(function ticks(){ // meter ticks at -50..+50 cents
-  const g=$("ticks");
+(function ticks(){ // meter ticks every 10 cents, -50..+50, on a radius-150 fan around (210,160)
+  const g=$("ticks"),cx=210,cy=160;
   for(let c=-50;c<=50;c+=10){
     const a=(c/50)*Math.PI/3;           // ±60°
-    const r1=c%50===0?170:178, r2=190;
-    const x=210+Math.sin(a), y=80;
+    const r2=150, r1=c%50===0?122:134;
     const l=document.createElementNS("http://www.w3.org/2000/svg","line");
-    const cx=210,cy=80;
     l.setAttribute("x1",cx+r1*Math.sin(a));l.setAttribute("y1",cy-r1*Math.cos(a));
     l.setAttribute("x2",cx+r2*Math.sin(a));l.setAttribute("y2",cy-r2*Math.cos(a));
+    if(c===0){l.setAttribute("stroke","#3ddc84");l.setAttribute("stroke-width","4")}
     g.appendChild(l);
   }
 })();
