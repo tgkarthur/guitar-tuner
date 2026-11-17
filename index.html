@@ -44,6 +44,7 @@
   #needle{transition:transform .08s linear;transform-origin:210px 80px}
   #lvlbox{width:60%;max-width:240px;height:6px;background:#1f232c;border-radius:3px;overflow:hidden}
   #lvl{height:100%;width:0;background:var(--accent);transition:width .05s}
+  #dbg{color:#7d8597;font-size:12px;min-height:16px;font-variant-numeric:tabular-nums}
   #cents{color:var(--muted);font-variant-numeric:tabular-nums;height:22px;font-size:16px}
 
   .strings{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:14px}
@@ -82,13 +83,13 @@
   </div>
   <div id="cents">&nbsp;</div>
   <div id="lvlbox"><div id="lvl"></div></div>
+  <div id="dbg"></div>
   <div id="hint">Tap Start, then pluck a string</div>
 </main>
 
 <div class="strings" id="strings"></div>
 <button id="start">Start tuning</button>
 <p id="msg"></p>
-<p id="dbg" style="color:#4a5163;font-size:11px;text-align:center;margin:2px 0 0;min-height:14px"></p>
 
 <script>
 "use strict";
@@ -273,7 +274,7 @@ window.__guided=guided;window.__ndf=ndf;
 
 // ---------- audio / main loop ----------
 let ctx,analyser,stream,buf,raf,wakeLock,running=false;
-let noise=0.0005,pend=-1,pendN=0,histIdx=-1,hist=[],lastGood=0,stableNote=null,stableCount=0;
+let tuneIdx=-1,tuneHist=[],latch=false,noise=0.0005,pend=-1,pendN=0,histIdx=-1,hist=[],lastGood=0,stableNote=null,stableCount=0;
 
 async function start(){
   $("msg").textContent="";
@@ -364,7 +365,7 @@ function loop(){
     // no clear note right now: keep the last reading visible (dimmed) so it can be read
     if(now-lastGood>600)document.body.classList.add("stale");
     if(now-lastGood>3000){
-      hist=[];histIdx=-1;pend=-1;pendN=0;document.body.classList.remove("stale");
+      hist=[];histIdx=-1;pend=-1;pendN=0;tuneIdx=-1;tuneHist=[];latch=false;document.body.classList.remove("stale");
       if($("note").textContent!=="–")reset(),$("hint").className="",$("hint").textContent="Pluck a string…";
     }
   }
@@ -387,7 +388,13 @@ function show(f,knownIdx){
   }
   const tf=midiToFreq(targetMidi);
   const cents=1200*Math.log2(f/tf);
-  const inTune=Math.abs(cents)<=5;
+  // "in tune" = within 5 cents. Once most of a short run is in tune it LATCHES (up to 9 cents)
+  // so a quickly fading note keeps showing green instead of flickering.
+  if(nearIdx!==tuneIdx){tuneIdx=nearIdx;tuneHist=[];latch=false}
+  tuneHist.push(Math.abs(cents)<=5);if(tuneHist.length>8)tuneHist.shift();
+  if(!latch&&tuneHist.length>=4&&tuneHist.filter(Boolean).length>=Math.ceil(tuneHist.length*0.6))latch=true;
+  if(latch&&Math.abs(cents)>9){latch=false;tuneHist=[]}
+  const inTune=Math.abs(cents)<=5||(latch&&Math.abs(cents)<=9);
   const cls=inTune?"ok":Math.abs(cents)<=15?"warn":"bad";
 
   $("note").innerHTML=noteName(targetMidi)+"<small>"+oct(targetMidi)+"</small>";
@@ -400,10 +407,7 @@ function show(f,knownIdx){
   $("hint").textContent=inTune?"In tune ✓":(cents<0?"Too low – tighten ↑":"Too high – loosen ↓");
 
   document.querySelectorAll(".strings button").forEach(b=>b.classList.toggle("near",+b.dataset.i===nearIdx&&selected===null));
-  if(t&&inTune){
-    stableCount=(stableNote===nearIdx)?stableCount+1:1;stableNote=nearIdx;
-    if(stableCount>12&&!done.has(nearIdx)){done.add(nearIdx);buildStrings()}
-  }else{stableNote=null;stableCount=0}
+  if(t&&latch&&!done.has(nearIdx)){done.add(nearIdx);buildStrings()}
 }
 
 if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
